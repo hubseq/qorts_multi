@@ -1,0 +1,128 @@
+#
+# run_main
+#
+# Template wrapper script that runs a command-line program within a Docker container.
+#
+import os, subprocess, sys
+from datetime import datetime
+sys.path.append('global_utils/src/')
+import module_utils
+
+def runOtherPre( input_dir, output_dir, run_json ):
+    """ This function is used to run any other commands BEFORE the main program has run.
+    run_json has most of what you might need to run other commands, and has the following structure:
+
+    run_json = {'module': module_name, 'local_input_dir': <LOCAL_INPUT_DIR>, 'local_output_dir': <LOCAL_OUT_DIR>, \
+		'remote_input_dir': remote_input_directory, 'remote_output_dir': remote_output_directory, \
+                'program_arguments': program_arguments, 'run_arguments': run_arguments_json, \
+                'module_instance_json': module_instance_json}
+
+    LOCAL_INPUT_DIR has any downloaded files. LOCAL_OUT_DIR has any output data or log files that will be uploaded.
+
+    If you are not running any other commands or post-processing, then leave this function blank.
+    """
+    pargs = run_json['program_arguments']
+    pargs_list_raw = pargs.split(' ')[1:]
+    pargs_list = []
+    # create decoder.txt - example args: -samples RE-TQS-1,RE-TQS-2,RE-TQS-5,RE-TQS-6 -lanes rep1,rep2,rep1,rep2 -groups untreated,untreated,treated,treated
+    decoder_matrix = {'unique.ID': ['sample1'], 'sample.ID': ['sample1'], 'lane.ID': [], 'group.ID': [], 'qc.data.dir': []}
+    input_dir = ''
+    output_dir = ''
+    while len(pargs_list_raw) > 0:
+        parg = pargs_list_raw[0]        
+        if parg=='-samples':
+            parg_next = pargs_list_raw[1] if len(pargs_list_raw) > 1 else ''
+            sample_list = parg_next.split(',')
+            decoder_matrix['unique.ID'] = sample_list            
+            decoder_matrix['sample.ID'] = sample_list
+            pargs_list_raw = pargs_list_raw[2:] if len(pargs_list_raw) > 1 else pargs_list_raw[1:]
+        elif parg=='-lanes':
+            # can use lane for any other grouping - e.g., dosage, day, tissue etc...
+            parg_next = pargs_list_raw[1] if len(pargs_list_raw) > 1 else ''
+            lane_list = parg_next.split(',')
+            decoder_matrix['lane.ID'] = lane_list
+            pargs_list_raw = pargs_list_raw[2:] if len(pargs_list_raw) > 1 else pargs_list_raw[1:]            
+        elif parg=='-groups':
+            parg_next = pargs_list_raw[1] if len(pargs_list_raw) > 1 else ''
+            group_list = parg_next.split(',')
+            decoder_matrix['group.ID'] = group_list
+            pargs_list_raw = pargs_list_raw[2:] if len(pargs_list_raw) > 1 else pargs_list_raw[1:]
+        elif parg=='-folders':
+            parg_next = pargs_list_raw[1] if len(pargs_list_raw) > 1 else ''
+            folder_list = parg_next.split(',')
+            decoder_matrix['qc.data.dir'] = folder_list
+            pargs_list_raw = pargs_list_raw[2:] if len(pargs_list_raw) > 1 else pargs_list_raw[1:]            
+        else:
+            # assume input dir is listed first, then output dir
+            if input_dir == '':
+                input_dir = parg.rstrip('/')+'/'
+            else:
+                output_dir = parg.rstrip('/')+'/'
+            pargs_list_raw = pargs_list_raw[1:]
+        
+    with open('/sample_decoder.txt','w') as fout:  # can we write to root dir?
+        # write header line
+        header_string = 'unique_ID'
+        header_string = header_string+'\tsample.ID' if decoder_matrix['sample.ID'] != [] else header_string
+        header_string = header_string+'\tlane.ID' if decoder_matrix['lane.ID'] != [] else header_string
+        header_string = header_string+'\tgroup.ID' if decoder_matrix['group.ID'] != [] else header_string
+        header_string = header_string+'\tqc.data.dir' if decoder_matrix['qc.data.dir'] != [] else header_string        
+        fout.write(header_string+'\n')
+        # write each sample row
+        for i in range(0,len(decoder_matrix['unique.ID'])):
+            row = decoder_matrix['unique.ID'][i]
+            row = row+'\t{}'.format(decoder_matrix['sample.ID'][i]) if len(decoder_matrix['sample.ID']) > i else row
+            row = row+'\t{}'.format(decoder_matrix['lane.ID'][i]) if len(decoder_matrix['lane.ID']) > i else row
+            row = row+'\t{}'.format(decoder_matrix['group.ID'][i]) if len(decoder_matrix['group.ID']) > i else row
+            row = row+'\t{}'.format(decoder_matrix['qc.data.dir'][i]) if len(decoder_matrix['qc.data.dir']) > i else row            
+            fout.write(row+'\n')
+            
+    pargs_list = ['Rscript', '/qortsGenMultiQC.R', input_dir, '/sample_decoder.txt', output_dir]
+    run_json['program_arguments'] = ' '.join(pargs_list)
+    print('PRE PROGRAM ARGS (MODIFIED): {}'.format(run_json['program_arguments']))
+    print('PRE LIST DIRS CWD: {}'.format(str(os.listdir(os.getcwd()))))
+    print('PRE LIST DIRS ROOT: {}'.format(str(os.listdir('/'))))
+    return run_json
+
+
+def runOtherPost( input_dir, output_dir, run_json ):
+    """ This function is used to run any other commands AFTER the main program has run.
+    run_json has most of what you might need to run other commands, and has the structure shown above.
+
+    If you are not running any other commands or pre-processing, then leave this function blank.
+    """
+    return run_json
+
+
+def runMain():
+    # time the duration of module container run
+    run_start = datetime.now()
+    print('Container running...')
+    
+    # initialize program run
+    run_json = module_utils.initProgram()
+    
+    # do any pre-processing (specific to module)
+    run_json = runOtherPre( run_json['local_input_dir'], run_json['local_output_dir'], run_json )
+    
+    # run main program
+    print('RUN_JSON: {}'.format(str(run_json)))
+    module_utils.runProgram( run_json['program_arguments'], run_json['local_output_file'] )
+    
+    # do any post-processing
+    run_json = runOtherPost( run_json['local_input_dir'], run_json['local_output_dir'], run_json )
+
+    # create run log that includes program run duration
+    run_end = datetime.now()
+    run_json['module_run_duration'] = str(run_end - run_start)
+    module_utils.logRun( run_json, run_json['local_output_dir'] )
+    
+    # upload output data files
+    module_utils.uploadOutput( run_json['local_output_dir'], run_json['remote_output_dir'] )
+    print('DONE!')
+    
+    return
+
+
+if __name__ == '__main__':
+    runMain()
